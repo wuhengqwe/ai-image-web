@@ -1,25 +1,25 @@
-# AI图片处理网页版
+# AI图片处理工具 - 网页版
 
-将AI生成图片伪装成真实相机拍摄的工具，运营通过浏览器上传图片即可使用。
+拼多多反AI检测图片处理工具。
 
-## 使用方法
+## 在线使用
 
-方式一：双击 `start.bat`
-方式二：命令行执行 `python app.py`
+👉 **https://wuhengqwe.github.io/ai-image-web/**
 
-浏览器自动打开 `http://localhost:5000`。
+打开链接，上传图片即可处理，所有操作在浏览器本地完成，不会上传到服务器。
 
 ## 功能
 
-- 上传图片后自动处理（添加传感器噪点、镜头色差、JPEG压缩痕迹、EXIF信息）
-- 一键下载处理后的ZIP包
-
-## 依赖
-
-```bash
-pip install -r requirements.txt
-```
+- 传感器噪点注入（模拟真实CMOS噪点）
+- 镜头色差添加（红蓝通道偏移）
+- JPEG压缩痕迹模拟
+- 锐度微调
+- 完整EXIF信息（相机型号、GPS、序列号等）
 
 ## 技术
 
-Flask + Pillow + piexif + numpy
+纯前端实现，使用 Canvas + piexifjs + JSZip。
+
+## 服务端版
+
+`server/` 目录下为 Flask 服务版，需要 Python 环境运行。

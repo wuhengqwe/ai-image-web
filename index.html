@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI图片处理工具</title>
+<script src="https://cdn.jsdelivr.net/npm/piexifjs@1.0.3/dist/piexif.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{
+  font-family:-apple-system,'Segoe UI',Roboto,sans-serif;
+  background:#f0f2f5;color:#333;min-height:100vh;
+  display:flex;flex-direction:column;align-items:center;padding:20px
+}
+.container{
+  background:#fff;border-radius:16px;box-shadow:0 4px 24px rgba(0,0,0,.08);
+  padding:40px;width:100%;max-width:640px
+}
+h1{font-size:22px;font-weight:600;text-align:center;margin-bottom:4px}
+.subtitle{text-align:center;color:#888;font-size:14px;margin-bottom:24px}
+.drop-zone{
+  border:2px dashed #d0d5dd;border-radius:12px;padding:40px 20px;
+  text-align:center;cursor:pointer;transition:all .2s;background:#fafafa
+}
+.drop-zone:hover,.drop-zone.dragover{border-color:#1677ff;background:#f0f5ff}
+.drop-zone .icon{font-size:48px;margin-bottom:8px;color:#999}
+.drop-zone .text{font-size:15px;color:#666}
+.drop-zone .hint{font-size:13px;color:#aaa;margin-top:4px}
+.drop-zone input[type="file"]{display:none}
+.file-list{margin-top:16px;display:none}
+.file-list.show{display:block}
+.file-item{
+  display:flex;align-items:center;gap:10px;
+  padding:8px 12px;background:#f9f9f9;border-radius:8px;margin-bottom:6px;font-size:13px
+}
+.file-item img{width:40px;height:40px;object-fit:cover;border-radius:4px}
+.file-item .name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.file-item .size{color:#999;font-size:12px}
+.btn{
+  display:block;width:100%;padding:14px;border:none;border-radius:10px;
+  font-size:16px;font-weight:500;cursor:pointer;transition:all .2s;margin-top:20px
+}
+.btn-primary{background:#1677ff;color:#fff}
+.btn-primary:hover{background:#4096ff}
+.btn-primary:disabled{background:#d9d9d9;cursor:not-allowed}
+.status{text-align:center;margin-top:16px;font-size:14px;color:#666;min-height:24px}
+.status.error{color:#ff4d4f}
+.status.success{color:#52c41a}
+.status.info{color:#1677ff}
+.progress-bar{
+  width:100%;height:4px;background:#f0f0f0;border-radius:2px;
+  margin-top:12px;overflow:hidden;display:none
+}
+.progress-bar.show{display:block}
+.progress-bar .fill{height:100%;background:#1677ff;border-radius:2px;width:0%;transition:width .3s}
+.footer{text-align:center;color:#bbb;font-size:12px;margin-top:20px}
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>📷 AI图片处理工具</h1>
+  <p class="subtitle">上传图片，自动添加真实拍摄特征</p>
+
+  <div class="drop-zone" id="dropZone">
+    <div class="icon">☁️</div>
+    <div class="text">点击上传或拖拽图片到此处</div>
+    <div class="hint">支持 JPG / PNG / WebP，可多选</div>
+    <input type="file" id="fileInput" multiple accept="image/*">
+  </div>
+
+  <div class="file-list" id="fileList"></div>
+  <button class="btn btn-primary" id="processBtn" disabled>⚙️ 处理图片</button>
+
+  <div class="progress-bar" id="progressBar"><div class="fill" id="progressFill"></div></div>
+  <div class="status" id="status"></div>
+  <div class="footer">所有处理在浏览器本地完成，图片不上传服务器</div>
+</div>
+
+<script>
+// ==================== 配置 ====================
+const CAMERA = {
+  make: 'Apple',
+  model: 'iPhone 14 Pro',
+  lens: 'iPhone 14 Pro back triple camera 6.86mm f/1.78',
+  software: '16.5.1',
+  serial: 'F17L9X7X',
+  lensSerial: 'AXB123456',
+  focal: '686/100',
+  fNumber: [178, 100],
+  isoRange: [100, 125, 160, 200, 250, 320, 400, 500],
+  expTime: [100, 120, 80, 60]
+}
+
+// GPS坐标池
+const GPS_LOCATIONS = [
+  [31.2304, 121.4737], [39.9042, 116.4074],
+  [23.1291, 113.2644], [30.5728, 104.0668],
+  [29.5630, 106.5516]
+]
+
+// ==================== UI ====================
+const dropZone = document.getElementById('dropZone')
+const fileInput = document.getElementById('fileInput')
+const fileList = document.getElementById('fileList')
+const processBtn = document.getElementById('processBtn')
+const status = document.getElementById('status')
+const progressBar = document.getElementById('progressBar')
+const progressFill = document.getElementById('progressFill')
+
+let selectedFiles = []
+
+dropZone.addEventListener('click', () => fileInput.click())
+fileInput.addEventListener('change', () => { selectFiles(fileInput.files); fileInput.value = '' })
+dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragover') })
+dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragover'))
+dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('dragover'); selectFiles(e.dataTransfer.files) })
+
+function selectFiles(files) {
+  const valid = Array.from(files).filter(f => f.type.startsWith('image/'))
+  if (!valid.length) { setStatus('请选择图片文件', 'error'); return }
+  selectedFiles = valid
+  renderFileList()
+  processBtn.disabled = false
+  setStatus(`已选择 ${selectedFiles.length} 张图片`, 'info')
+}
+
+function formatSize(b) {
+  if (b < 1024) return b + ' B'
+  if (b < 1048576) return (b / 1024).toFixed(1) + ' KB'
+  return (b / 1048576).toFixed(1) + ' MB'
+}
+
+function renderFileList() {
+  fileList.innerHTML = ''
+  fileList.classList.add('show')
+  selectedFiles.forEach(f => {
+    const div = document.createElement('div')
+    div.className = 'file-item'
+    const img = document.createElement('img')
+    img.src = URL.createObjectURL(f)
+    img.onload = () => URL.revokeObjectURL(img.src)
+    div.appendChild(img)
+    const name = document.createElement('span')
+    name.className = 'name'
+    name.textContent = f.name
+    div.appendChild(name)
+    const size = document.createElement('span')
+    size.className = 'size'
+    size.textContent = formatSize(f.size)
+    div.appendChild(size)
+    fileList.appendChild(div)
+  })
+}
+
+function setStatus(msg, type) {
+  status.textContent = msg
+  status.className = 'status' + (type ? ' ' + type : '')
+}
+
+// ==================== 图像处理 ====================
+
+function applySharpness(ctx, w, h) {
+  // 锐度降低 (0.95) - 使用卷积核
+  const imgData = ctx.getImageData(0, 0, w, h)
+  const data = imgData.data
+  const out = new Uint8ClampedArray(data)
+  // 简单均值模糊 + 混合: 0.95*原图 + 0.05*模糊 = 轻微降锐(效果等同于锐度0.95)
+  const kernel = [1/9, 1/9, 1/9, 1/9, 1/9, 1/9, 1/9, 1/9, 1/9]
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const idx = (y * w + x) * 4
+      for (let c = 0; c < 3; c++) {
+        let sum = 0, ki = 0
+        for (let dy = -1; dy <= 1; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            sum += data[((y+dy)*w + (x+dx))*4 + c] * kernel[ki]
+            ki++
+          }
+        }
+        out[idx + c] = data[idx + c] * 0.95 + sum * 0.05
+      }
+    }
+  }
+  ctx.putImageData(new ImageData(out, w, h), 0, 0)
+}
+
+function addLensChromaticAberration(ctx, w, h) {
+  // 色差：红通道右移，蓝通道左移
+  const imgData = ctx.getImageData(0, 0, w, h)
+  const data = imgData.data
+  const out = new Uint8ClampedArray(data)
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const idx = (y * w + x) * 4
+      // 红：右移1px
+      const rx = Math.min(w - 1, x + 1)
+      const ridx = (y * w + rx) * 4
+      out[idx] = data[ridx]
+      // 蓝：左移1px
+      const bx = Math.max(0, x - 1)
+      const bidx = (y * w + bx) * 4
+      out[idx + 2] = data[bidx + 2]
+      // 绿不动
+    }
+  }
+  ctx.putImageData(new ImageData(out, w, h), 0, 0)
+}
+
+function addSensorNoise(ctx, w, h, iso) {
+  const imgData = ctx.getImageData(0, 0, w, h)
+  const data = imgData.data
+  const intensity = 2 + (iso / 100) * 0.8
+  for (let i = 0; i < data.length; i += 4) {
+    const lumNoise = (Math.random() - 0.5) * intensity * 0.7 * 2
+    const chromaNoise = (Math.random() - 0.5) * intensity * 0.4 * 2
+    data[i] = Math.max(0, Math.min(255, data[i] + lumNoise + chromaNoise * 0.8))
+    data[i+1] = Math.max(0, Math.min(255, data[i+1] + lumNoise))
+    data[i+2] = Math.max(0, Math.min(255, data[i+2] + lumNoise + chromaNoise * 1.2))
+  }
+  ctx.putImageData(imgData, 0, 0)
+}
+
+function simulateJPEGArtifacts(canvas, quality) {
+  // 先用低质保存再读回，模拟压缩痕迹
+  return new Promise(resolve => {
+    canvas.toBlob(blob1 => {
+      const img = new Image()
+      img.onload = () => {
+        const c2 = document.createElement('canvas')
+        c2.width = canvas.width
+        c2.height = canvas.height
+        const ctx2 = c2.getContext('2d')
+        ctx2.filter = 'blur(0.3px)'
+        ctx2.drawImage(img, 0, 0)
+        ctx2.filter = 'none'
+        resolve(c2)
+      }
+      img.src = URL.createObjectURL(blob1)
+    }, 'image/jpeg', quality - 7) // 先压一次较低的
+  })
+}
+
+function generateGPS() {
+  const loc = GPS_LOCATIONS[Math.floor(Math.random() * GPS_LOCATIONS.length)]
+  let lat = loc[0] + (Math.random() - 0.5) * 0.02
+  let lon = loc[1] + (Math.random() - 0.5) * 0.02
+  function toDMS(v) {
+    const d = Math.floor(Math.abs(v))
+    const m = Math.floor((Math.abs(v) - d) * 60)
+    const s = Math.round(((Math.abs(v) - d) * 60 - m) * 60 * 100)
+    return [[d, 1], [m, 1], [s, 100]]
+  }
+  return {
+    GPSLatitude: toDMS(lat),
+    GPSLatitudeRef: lat >= 0 ? 'N' : 'S',
+    GPSLongitude: toDMS(lon),
+    GPSLongitudeRef: lon >= 0 ? 'E' : 'W',
+    GPSAltitude: [Math.floor(Math.random() * 90 + 10), 1]
+  }
+}
+
+function randomTime() {
+  const d = new Date()
+  d.setDate(d.getDate() - Math.floor(Math.random() * 30))
+  d.setHours(Math.floor(Math.random() * 12 + 8), Math.floor(Math.random() * 60), Math.floor(Math.random() * 60))
+  return d
+}
+
+function pad2(n) { return n.toString().padStart(2, '0') }
+
+function dateStr(d) {
+  return `${d.getFullYear()}:${pad2(d.getMonth()+1)}:${pad2(d.getDate())} ${pad2(d.getHours())}:${pad2(d.getMinutes())}:${pad2(d.getSeconds())}`
+}
+
+async function processSingleImage(file) {
+  // 1. 加载到canvas
+  const img = await new Promise((resolve, reject) => {
+    const i = new Image()
+    i.onload = () => resolve(i)
+    i.onerror = reject
+    i.src = URL.createObjectURL(file)
+  })
+
+  const canvas = document.createElement('canvas')
+  canvas.width = img.naturalWidth
+  canvas.height = img.naturalHeight
+  const ctx = canvas.getContext('2d')
+  ctx.drawImage(img, 0, 0)
+
+  const w = canvas.width, h = canvas.height
+
+  // 2. 锐度降低
+  applySharpness(ctx, w, h)
+
+  // 3. 镜头色差
+  addLensChromaticAberration(ctx, w, h)
+
+  // 4. 添加噪点
+  const iso = CAMERA.isoRange[Math.floor(Math.random() * CAMERA.isoRange.length)]
+  addSensorNoise(ctx, w, h, iso)
+
+  // 5. JPEG压缩痕迹（先低质导出再读回）
+  const processedCanvas = await simulateJPEGArtifacts(canvas, 92)
+
+  // 6. 最终导出为JPEG + 嵌入EXIF
+  const blob = await new Promise(resolve => {
+    processedCanvas.toBlob(resolve, 'image/jpeg', 0.92)
+  })
+
+  // 7. 嵌入EXIF
+  const ab = await blob.arrayBuffer()
+  const shootTime = randomTime()
+  const expIdx = Math.floor(Math.random() * CAMERA.expTime.length)
+
+  const exifObj = {
+    '0th': {
+      [piexif.ImageIFD.Make]: CAMERA.make,
+      [piexif.ImageIFD.Model]: CAMERA.model,
+      [piexif.ImageIFD.DateTime]: dateStr(shootTime),
+      [piexif.ImageIFD.Software]: CAMERA.software,
+      [piexif.ImageIFD.Orientation]: 1,
+      [piexif.ImageIFD.XResolution]: [72, 1],
+      [piexif.ImageIFD.YResolution]: [72, 1],
+      [piexif.ImageIFD.ResolutionUnit]: 2,
+      [piexif.ImageIFD.HostComputer]: CAMERA.model,
+    },
+    'Exif': {
+      [piexif.ExifIFD.LensMake]: CAMERA.make,
+      [piexif.ExifIFD.LensModel]: CAMERA.lens,
+      [piexif.ExifIFD.DateTimeOriginal]: dateStr(shootTime),
+      [piexif.ExifIFD.DateTimeDigitized]: dateStr(shootTime),
+      [piexif.ExifIFD.ISOSpeedRatings]: iso,
+      [piexif.ExifIFD.FNumber]: CAMERA.fNumber,
+      [piexif.ExifIFD.ExposureTime]: [1, CAMERA.expTime[expIdx]],
+      [piexif.ExifIFD.FocalLength]: eval(CAMERA.focal),
+      [piexif.ExifIFD.ExposureProgram]: 2,
+      [piexif.ExifIFD.MeteringMode]: 5,
+      [piexif.ExifIFD.Flash]: [0, 0, 0, 16][Math.floor(Math.random() * 4)],
+      [piexif.ExifIFD.WhiteBalance]: 0,
+      [piexif.ExifIFD.PixelXDimension]: w,
+      [piexif.ExifIFD.PixelYDimension]: h,
+      [piexif.ExifIFD.SceneCaptureType]: 0,
+      [piexif.ExifIFD.Contrast]: 0,
+      [piexif.ExifIFD.Saturation]: 0,
+      [piexif.ExifIFD.Sharpness]: 0,
+      [piexif.ExifIFD.BodySerialNumber]: CAMERA.serial,
+      [piexif.ExifIFD.LensSerialNumber]: CAMERA.lensSerial,
+    },
+    'GPS': generateGPS(),
+    '1st': {},
+    'thumbnail': null
+  }
+
+  try {
+    const newJpeg = piexif.insert(exifObj, new Uint8Array(ab))
+    const outName = file.name.replace(/\.[^.]+$/, '.jpg')
+    return { name: outName, data: newJpeg.buffer }
+  } catch (e) {
+    // EXIF失败时返回无EXIF的版本
+    console.warn('EXIF写入失败:', e)
+    return { name: file.name.replace(/\.[^.]+$/, '.jpg'), data: ab }
+  }
+}
+
+// ==================== 处理入口 ====================
+processBtn.addEventListener('click', async () => {
+  if (!selectedFiles.length) return
+
+  processBtn.disabled = true
+  processBtn.textContent = '⏳ 处理中...'
+  progressBar.classList.add('show')
+  progressFill.style.width = '0%'
+  setStatus('正在处理...', 'info')
+
+  const results = []
+  for (let i = 0; i < selectedFiles.length; i++) {
+    try {
+      const r = await processSingleImage(selectedFiles[i])
+      results.push(r)
+      progressFill.style.width = `${((i + 1) / selectedFiles.length) * 100}%`
+    } catch (e) {
+      console.error(selectedFiles[i].name, e)
+    }
+  }
+
+  // 打包ZIP
+  const zip = new JSZip()
+  results.forEach(r => zip.file(r.name, r.data))
+
+  const zipBlob = await zip.generateAsync({ type: 'blob' })
+  const url = URL.createObjectURL(zipBlob)
+
+  const a = document.createElement('a')
+  a.href = url
+  a.download = 'processed_images.zip'
+  document.body.appendChild(a)
+  a.click()
+  document.body.removeChild(a)
+
+  setStatus(`✅ 处理完成！${results.length}/${selectedFiles.length} 张，已自动下载`, 'success')
+  progressFill.style.width = '100%'
+
+  processBtn.disabled = false
+  processBtn.textContent = '⚙️ 处理图片'
+  setTimeout(() => progressBar.classList.remove('show'), 3000)
+})
+</script>
+</body>
+</html>
