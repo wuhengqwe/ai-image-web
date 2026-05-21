@@ -1,0 +1,4 @@
+flask>=2.0
+pillow>=9.0
+piexif>=1.1
+numpy>=1.21
