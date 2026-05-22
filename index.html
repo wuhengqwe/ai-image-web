@@ -353,13 +353,27 @@ async function processSingleImage(file) {
   }
 
   try {
-    const newJpeg = piexif.insert(exifObj, new Uint8Array(ab))
+    // 1. 先用 dump 将 EXIF 对象转为二进制字符串
+    const exifStr = piexif.dump(exifObj)
+    // 2. 将 JPEG ArrayBuffer 转为二进制字符串
+    const jpegBytes = new Uint8Array(ab)
+    let jpegStr = ''
+    for (let i = 0; i < jpegBytes.length; i++) {
+      jpegStr += String.fromCharCode(jpegBytes[i])
+    }
+    // 3. piexif.insert 返回带 EXIF 的 JPEG 二进制字符串
+    const newJpegStr = piexif.insert(exifStr, jpegStr)
+    // 4. 转回 Uint8Array
+    const result = new Uint8Array(newJpegStr.length)
+    for (let i = 0; i < newJpegStr.length; i++) {
+      result[i] = newJpegStr.charCodeAt(i)
+    }
     const outName = file.name.replace(/\.[^.]+$/, '.jpg')
-    return { name: outName, data: newJpeg.buffer }
+    return { name: outName, data: result.buffer }
   } catch (e) {
-    // EXIF失败时返回无EXIF的版本
     console.warn('EXIF写入失败:', e)
-    return { name: file.name.replace(/\.[^.]+$/, '.jpg'), data: ab }
+    const outName = file.name.replace(/\.[^.]+$/, '.jpg')
+    return { name: outName, data: ab }
   }
 }
 
